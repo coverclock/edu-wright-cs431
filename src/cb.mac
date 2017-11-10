@@ -1,0 +1,233 @@
+	.TITLE	CB
+	.IDENT	/850604/
+	.ENABL	LC
+	.SBTTL	Abstract
+;
+;
+;
+;	K E R N E L   C O N T R O L   B L O C K S
+;
+;
+;
+; 	Title		Control Blocks
+;	Author(s)	John Sloan, David Hemmendinger, et al.
+;	Installation	Wright State University
+;			Departments of Computer Science/Computer Engineering
+;	Date		Spring, 1982
+;	Language	Macro-11
+;	Abstract
+;
+;			This module is the impure portion of the kernel.
+;			It contains the various kernel data structures such
+;			as the Current Process pointer, the READY queue, and
+;			the pool of Free PCBS.
+;
+;			See the comments accompanying the kernel for more
+;			information.
+;
+;			This software is in the public domain provided
+;			credit is acknowledged to the Computer Science
+;			Department of Wright State University. No warranty
+;			is expressed or implied by the authors, the department,
+;			or the University.
+;
+;	Modifications
+;
+;		JLS 		Eliminated buffer pool and associated symbolics
+;		JLS	06Jun84	Improved embedded documentation
+;		DH		Placed CB in program section labelled DATA
+;		JLS	29Jan85	Introduced pseudo-C code
+;		DH/JLS	12Mar85	More finicky changes
+;
+	.PSECT	DATA,RW,D
+
+	.SBTTL	Global Definitions
+;------------------------------------------------------------------------------
+;
+;
+;	G L O B A L   D E F I N I T I O N S
+;
+;
+;------------------------------------------------------------------------------
+;
+	.GLOBL	P.NEXT,P.STACK,P.PC,P.PS,P.SP,P.BYTES,P.WORDS
+	.GLOBL	Q.NUM,Q.SLOTS,Q.FRONT,Q.REAR,Q.SEMA,Q.BYTES,Q.WORDS
+	.GLOBL	N.PCBS.N.VARS
+	.GLOBL	STACK,CP,READY,PCBS,FPCBS
+	.SBTTL	Symbolic Definitions
+;------------------------------------------------------------------------------
+;
+;
+;	S Y M B O L I C   D E F I N I T I O N S
+;
+;
+;
+;	Allocation Definitions
+;
+;		To alter the number of PCBs, the size of the initial boot
+;		stack, or the size of each PCB stack: edit the appropriate
+;		line, reassemble this module, and relink the application.
+;
+;------------------------------------------------------------------------------
+;
+	N.PCBS	=	10.			; NUMBER OF PCBS IN SYSTEM
+	N.BOOT	=	32.			; NUMBER OF WORDS IN BOOT STACK
+	N.STACK	=	28.			; NUMBER OF WORDS IN PCB STACK
+
+	.SBTTL	Process Control Block Definitions
+;------------------------------------------------------------------------------
+;
+;	Process Control Block Definitions
+;
+;		+-----------------------+
+;	PCB:	|	P.NEXT		|	pointer to next PCB in a queue
+;		+-----------------------+
+;		|	P.PC		|	entry point of process
+;		+-----------------------+
+;		|	P.PS		|	CPU priority of process
+;		+-----------------------+
+;		|	P.SP		|	saved stack pointer
+;		+-----------------------+
+;		|	:		|
+;		|	:		|
+;		=	N.STACK words	=	process' own stack
+;		|	:		|
+;		|	:		|
+;		+-----------------------+
+;			P.STACK			base of stack
+;
+;	typedef	struct pcb	{
+;				pcb *next;
+;				PROCESS (*pc)();
+;				int ps;
+;				LONG sp;
+;				LONG stack[NSTACK];
+;				} PCB;
+;					
+;------------------------------------------------------------------------------
+;
+	P.NEXT	=	0			; LINK TO NEXT PCB
+	P.PC	=	2			; PROCESS ENTRY POINT
+	P.PS	=	4			; PROCESS PROCESSOR STATUS
+	P.SP	=	6			; SAVED STACK POINTER
+	P.STACK	=	<P.SP+2+<N.STACK*2>>	; BOTTOM OF STACK
+	P.BYTES	=	P.STACK			; PCB SIZE IN BYTES
+	P.WORDS	=	<P.BYTES/2>		; PCB SIZE IN WORDS
+	.SBTTL	Queue Header Definitions
+;------------------------------------------------------------------------------
+;
+;	Queue Header Definitions
+;
+;		+-----------------------+
+;	QUEUE:	|	Q.NUM		|	number of items in queue
+;		+-----------------------+
+;		|	Q.SLOTS		|	number of available slots
+;		+-----------------------+
+;		|	Q.FRONT		|	link to first item in queue
+;		+-----------------------+
+;		|	Q.REAR		|	link to last item in queue
+;		+-----------------------+
+;			Q.SEMAPHORE		beginning of semaphore
+;
+;	typedef struct	{
+;			int num, slots;
+;			char *front, *rear;
+;			} QUEUE;
+;
+;	typedef QUEUE SEMAPHORE;
+;
+;	typedef struct	{
+;			QUEUE queue;
+;			SEMAPHORE semaphore;
+;			} MAILBOX;
+;
+;------------------------------------------------------------------------------
+;
+	Q.NUM	=	0			; NUMBER OF ITEMS IN QUEUE (<0)
+	Q.SLOTS	=	2			; NUMBER OF EMPTY SLOTS IN QUEUE (>0)
+	Q.FRONT	=	4			; LINK TO FIRST ITEM IN QUEUE
+	Q.REAR	=	6			; LINK TO LAST ITEM IN QUEUE
+	Q.SEMAP	=	10			; SEMAPHORE (IF MESSAGE QUEUE)
+	Q.BYTES	=	8.			; SIZE OF HEADER IN BYTES
+	Q.WORDS	=	<Q.BYTES/2>		; SIZE OF HEADER IN WORDS
+
+	.SBTTL	Storage Areas
+	.SBTTL	Boot Stack
+;------------------------------------------------------------------------------
+;
+;
+;
+;	S T O R A G E   A R E A S
+;
+;
+;
+;	Boot Stack
+;
+;		This stack is only used when the kernel first initializes. Once
+;		multitasking begins, the stacks in the Process Control Blocks
+;		are used exclusively.
+;
+;		LONG stack[NBOOT];
+;
+;------------------------------------------------------------------------------
+;
+
+	.BLKW	N.BOOT				; USED ONLY AT INITIALIZATION
+STACK:
+	.SBTTL	Current Process Pointer
+;------------------------------------------------------------------------------
+;
+;	Current Process Pointer
+;
+;		This points to the Process Control Block of the Current
+;		Process, that is, the process that currently has control
+;		of the CPU.
+;
+;		PCB *cp;
+;
+;------------------------------------------------------------------------------
+;
+CP:	.BLKW	1				; LINK TO CURRENT (RUNNING) PCB
+;
+	.SBTTL	Ready Queue
+;------------------------------------------------------------------------------
+;
+;	Ready Queue
+;
+;		This is a queue that contains Process Control Blocks of
+;		all processes that are READY to run but do not currently
+;		have control of the CPU.
+;
+;		QUEUE ready;
+;
+;------------------------------------------------------------------------------
+;
+READY:	.BLKW	Q.WORDS				; QUEUE OF READY_TO_RUN PCBS
+;
+	.SBTTL	Free Process Control Block Pool
+;------------------------------------------------------------------------------
+;
+;	Free Process Control Block Pool
+;
+;		This is the kernel's pool of unused Process Control Blocks.
+;		PCBs are removed from this pool by CRP and returned to it by
+;		EOP.
+;
+;		MAILBOX pcbs;
+;		PCB fpcbs[NPSBS];
+;
+;------------------------------------------------------------------------------
+;
+PCBS:	.BLKW	<2*Q.WORDS>			; POOL OF FREE (UNUSED) PCBS
+FPCBS:	.BLKW	<N.PCBS*P.WORDS>		; ALLOCATION OF FREE PCBs
+
+	.SBTTL	End
+;------------------------------------------------------------------------------
+;
+;
+;	E N D   O F   C O N T R O L   B L O C K S
+;
+;
+;------------------------------------------------------------------------------
+;
+	.END

@@ -1,0 +1,892 @@
+	.TITLE	SY
+	.IDENT	/850604/
+	.ENABL	LC,GBL
+	.SBTTL	Abstract
+;
+;
+;	S Y S T E M   K E R N E L
+;
+;
+;
+; 	Title		System Kernel
+;	Author(s)	John Sloan, David Hemmendinger, et al.
+;	Installation	Wright State University
+;			Departments of Computer Science/Computer Engineering
+;	Date		Spring, 1982
+;	Host(s)		PDP-11/xx	 	RSX-11M 3.2, 4.0
+;			PDP-11/xx, LSI-11/xx	RT-11 SJ, FB V4
+;	Target(s)	PDP-11/xx, LSI-11/XX	Standalone
+;	Language	Macro-11
+;	Abstract
+;
+;		This is a simple kernel that provides a rudimentary standalone
+;		multiprogramming environment upon which a real-time operating
+;		system may be built. Kernel services include process
+;		synchronization through counting semaphores, inter-process
+;		communication through asynchronous queued message passing, and
+;		dynamic process creation and destruction.
+;
+;		The evolution of the kernel began long long ago when Robert
+;		Dixon and Joseph Kohler of the Computer Science Department at
+;		Wright State University first developed the Real-Time Software
+;		Design course (CEG431/631) around 1967. This kernel's design
+;		owes much to a later version implemented by Dayton Clark around
+;		1980. Finally, the present version was cleaned up, enhanced,
+;		and documented by David Hemmendinger and John Sloan in 1982.
+;		The kernel has been in production for several years, and has
+;		found its way into a variety of undergraduate and graduate
+;		courses; it has been ported to several different processors;
+;		it has been embedded in other research systems such as SLICK
+;		(Simple Lsi-11 Interprocessor Communication Kernel) and TASK4TH
+;		(a real-time multitasking FORTH interpreter).
+;
+;		The kernel uses the EMulator Trap machine instruction. The
+;		EMT instruction cannot be used for any other purpose. If the
+;		use of EMT is inappropriate, the symbol KSR can be changed
+;		to use the TRAP instruction. No other machine instruction can
+;		be used.
+;
+;		The code in this module is pure and thus ROMable.
+;
+;		WARNING! The kernel service routines must run in an
+;		uninterruptable state. The code that implements these routines
+;		must be as short and as efficient as possible if real-time
+;		applications are to run successfully. For example, the addition
+;		of even a single instruction to the EMT decoding in the Kernel
+;		Service Request Handler can result in timing errors on high
+;		speed devices such as communication lines and card readers.
+;
+;		Only two processes are specifically created by the kernel: the
+;		initialization process (INI.PR) and the null process (NU.PR).
+;		NU.PR is always in the ready state so that the READY queue is
+;		never devoid of something to run. It is defined inside the
+;		kernel module itself, even though it is not conceptually a
+;		part of the kernel itself. INI.PR has the responsibility of
+;		creating all other processes in the system. It must be defined
+;		by the user, and its entry point must be labelled with the
+;		global symbol INI.PR. Typically, INI.PR can self-destruct via
+;		the EOP kernel service call when initialization is complete.
+;
+;		The kernel is in the public domain provided credit is
+;		acknowledged to the Computer Science Department of Wright
+;		State University. No warranty is expressed or implied by
+;		the authors, the department, or the University.
+;
+;		The algorithms presented in pseudo-C code should be
+;		considered guidelines or aids to assist in understanding
+;		the corresponding assembler code. In most cases, the analogy
+;		is only approximate.
+;
+;	Modifications
+;
+;		JLS	15Jun82	Original version made production
+;		DH		GET, PUT made subroutines
+;               JLS		GET, PUT made local to the kernel
+;		JLS		Fixed FORMAT bug that corrupted R4
+;		DH		Fixed FORMAT to allow queues past 100000(8)
+;		JLS	06Jun84	Improved embedded documentation
+;		DH	10Sep84 Fixed inefficiency in FORMAT
+;		DH		Fixed JLS's spelling
+;		JLS	29Jan85	Introduced pseudo-C algorithms
+;		DH	12Mar85	More finicky changes in documentation
+;		DH	02Oct86 Fixed bug in $V
+;
+;
+;
+;
+;
+	.PSECT	KERNEL,RO,I
+	.SBTTL	Global Definitions
+;------------------------------------------------------------------------------
+;
+;
+;	G L O B A L   D E F I N I T I O N S
+;
+;
+;------------------------------------------------------------------------------
+;
+	.GLOBL	KERNEL				; SYSTEM ENTRY POINT
+	.GLOBL	CRP,STP,EOP,SW			; PCB MANAGEMENT PRIMITIVES
+	.GLOBL	P,V				; SEMAPHORE MANAGEMENT PRIMITIVES
+	.GLOBL	SEND,RECV			; MESSAGE MANAGEMENT PRIMITIVES
+	.GLOBL	P0,P1,P2,P3,P4,P5,P6,P7		; PROCESSOR PRIORITY LEVELS
+	.GLOBL	FORMAT				; FORMAT SUBROUTINE
+	.SBTTL	Symbolic Definitions
+;------------------------------------------------------------------------------
+;
+;
+;	S Y M B O L I C   D E F I N I T I O N S
+;
+;
+;	Kernel Service Request Definitions
+;
+;------------------------------------------------------------------------------
+;
+	KSR	=	EMT			; USE EMULATOR TRAP
+;
+	SW	=	KSR+0.			; SHORT WAIT
+	P	=	KSR+2.			; ENQ SEMAPHORE
+	V	=	KSR+4.			; DEQ SEMAPHORE
+	SEND	=	KSR+6.			; SEND MESSAGE TO QUEUE
+	RECV	=	KSR+8.			; RECEIVE MESSAGE FROM QUEUE
+	CRP	=	KSR+10.			; CREATE PROCESS
+	STP	=	KSR+12.			; START PROCESS
+	EOP	=	KSR+14.			; END OF PROCESS
+;
+;------------------------------------------------------------------------------
+;
+;	System Trap Vectors
+;
+;------------------------------------------------------------------------------
+;
+	K.PC	=	030			; EMULATOR TRAP
+	K.PS	=	K.PC+2
+	T4.PC	=	004			; ODD/ILLEGAL ADDRESS
+	T4.PS	=	T4.PC+2
+	T10.PC	=	010			; ILLEGAL/RESERVED INSTRUCTION
+	T10.PS	=	T10.PC+2
+;
+;------------------------------------------------------------------------------
+;
+;	CPU Priority Levels
+;
+;------------------------------------------------------------------------------
+;
+	PRIORITY=	32.			; PRIORITY MODULUS
+;
+	P0	=	PRIORITY*0		; BUS REQUEST LEVEL 0
+	P1	=	PRIORITY*1		; BR1
+	P2	=	PRIORITY*2		; BR2
+	P3	=	PRIORITY*3		; BR3
+	P4	=	PRIORITY*4		; BR4
+	P5	=	PRIORITY*5		; BR5
+	P6	=	PRIORITY*6		; BR6
+	P7	=	PRIORITY*7		; BR7 UNINTERRUPTABLE
+	.SBTTL	Kernel Entry Point
+;------------------------------------------------------------------------------
+;
+;
+;	K E R N E L   E N T R Y   P O I N T
+;
+;
+;		The execution of any application using this kernel MUST
+;		start at this entry point.
+;
+; Algorithm:
+;			main()
+;				{
+;				reset();
+;				sp = &stack;
+;				t4_pc = &t4_ps;
+;				t4_ps = HALT;
+;				t10_pc = &t10_ps;
+;				t10_ps = HALT;
+;				k_pc = &ksrh;
+;				k_ps = P7;
+;				format(pcbs.queue,fpcbs,N_PCBS,P_BYTES);
+;				format(pcbs.semaphore,0,0);
+;				format(ready,1,N_PCBS,0);
+;				stp(crp(&nu_pr,P0));
+;				pop(crp(&ini_pr,P0));
+;				}
+;
+;
+;------------------------------------------------------------------------------
+;
+KERNEL:
+	RESET					; RESET HARDWARE
+	MOV	#STACK,SP			; SET UP TEMPORARY STACK
+	MOV	#T4.PS,@#T4.PC			; INITIALIZE TRAP VECTORS
+	CLR	@#T4.PS
+	MOV	#T10.PS,@#T10.PC
+	CLR	@#T10.PS
+	MOV	#KSRH,@#K.PC			; INITIALIZE EMT VECTOR
+	MOV	#P7,@#K.PS
+	MOV	#PCBS,R0			; FORMAT FREE PCB QUEUE
+	MOV	#FPCBS,R1
+	MOV	#N.PCBS,R2
+	MOV	#P.BYTES,R3
+	JSR	PC,FORMAT
+	ADD	#Q.BYTES,R0
+	CLR	R1
+	JSR	PC,FORMAT
+	MOV	#READY,R0			; FORMAT READY QUEUE
+	MOV	#1,R1
+	MOV	#N.PCBS,R2
+	JSR	PC,FORMAT
+	MOV	#NU.PR,R4			; CREATE AND START NULL PROCESS
+	MOV	#P0,R5
+	CRP
+	STP
+	MOV	#INI.PR,R4			; CREATE AND START INIT PROCESS
+	MOV	#P0,R5
+	CRP
+	JMP	POP				; BEGIN MULTIPROGRAMMING
+	.SBTTL	Null Process
+;------------------------------------------------------------------------------
+;
+;
+;	N U L L   P R O C E S S
+;
+;
+;		The NUll PRocess constantly circulates through the READY
+;		queue. It provides the CPU something to do when all other
+;		processes are asleep.
+;
+; Algorithm:
+;
+;		PROCESS nu_pr ()
+;			{
+;			for (;;)
+;				sw();
+;			}
+;
+;		One design problem with the null process is that it spends
+;		nearly all of its processing time inside the kernel, performing
+;		the context switch, at priority seven. A possible alternative
+;		algorithm is shown below.
+;
+;		PROCESS nu_pr ()
+;			{
+;			for (;;)
+;				while (empty(ready)) do;
+;				sw();
+;			}
+;
+;------------------------------------------------------------------------------
+;
+NU.PR:
+	SW					; SHORT WAIT
+	BR	NU.PR				; FOREVER
+	.SBTTL	Kernel Service Request Handler
+;------------------------------------------------------------------------------
+;
+;
+;	K E R N E L   S E R V I C E   R E Q U E S T   H A N D L E R
+;
+;
+;		KSRH is entered exclusively through the EMT instruction.
+;		This routine must be as short and fast as possible. KSRH
+;		decodes the EMT instruction to determine the service
+;		requested. The EMT instruction must be in the form
+;
+;			1 000 100 0XX XXX XXX
+;
+;		where the service request is encoded in the low order
+;		byte. This code must be a positive, even number. This
+;		makes the decoding as fast as possible. Note that the EMT
+;		machine instruction saves the PS and PC (R7) on the stack,
+;		while KSRH saves R0 to use as a work register.
+;
+; Algorithm:
+;			VOID ksrh(sp)
+;			register LONG sp[];
+;				{
+;				(*(*(table + (*(*(sp+2)-2)))))();
+;				}
+;
+;------------------------------------------------------------------------------
+;
+KSRH:
+	MOV	R0,-(SP)			; SAVE R0
+	MOV	2(SP),R0			; RETRIEVE RETURN PC
+	MOVB	-2(R0),R0			; GET LOWER BYTE OF EMT
+	JMP	@TABLE(R0)			; ENTER KSR
+;
+;------------------------------------------------------------------------------
+;
+;	Kernel Service Routine Definition Table
+;
+;------------------------------------------------------------------------------
+;
+TABLE:
+	.WORD	$SW				; SHORT WAIT
+	.WORD	$P				; P ON SEMAPHORE
+	.WORD	$V				; V ON SEMAPHORE
+	.WORD	$SEND				; SEND TO MESSAGE QUEUE
+	.WORD	$RECV				; RECEIVE FROM MESSAGE QUEUE
+	.WORD	$CRP				; CREATE PROCESS
+	.WORD	$STP				; START PROCESS
+	.WORD	$EOP				; END OF PROCESS
+	.SBTTL	Kernel Utility Routines
+	.SBTTL	FORMAT Subroutine
+;------------------------------------------------------------------------------
+;
+;
+;	K E R N E L   U T I L I T Y   R O U T I N E S
+;
+;
+;		With the exception of FORMAT, all kernel utility routines
+;		are strictly local to the kernel and cannot be accessed
+;		externally.
+;
+; FORMAT(Q,A,N,L) may be used to initialize queue header data structures.
+;	Since queue headers are used for a variety of applications (semaphores,
+;	message queues, etc,), FORMAT can be used to initialize any of the
+;	various kernel data structures. Message queues consist of two queue
+;	headers; FORMAT must be called twice to initialize these data
+;	structures. Note that FORMAT is not a kernel service routine, and
+;	is therefore not explicitly uninterruptable.
+;
+;	FORMAT assumes the standard buffer structure: the first word of any
+;	data structure to be enqueued must be a link field.
+;
+; Algorithm:
+;
+;			VOID format(q,a,n,l)
+;			QUEUE *q;
+;			char *a;
+;			int n,l;
+;				{
+;				char *t;
+;				if (((unsigned LONG) a) > 1)
+;					{
+;					q->slots = 0;
+;					q->num = -n;
+;					q->front = a;
+;					for (t=a; n>1; n--)
+;						{
+;						a += l;
+;						*t = a;
+;						t = a;
+;						}
+;					*a = NULL;
+;					q->rear = a;
+;					}
+;				else
+;					if (((unsigned LONG) a) == 1)
+;						{
+;						q->num = 0;
+;						q->slots = n;
+;						q->front = NULL;
+;						q->rear = NULL;
+;						}
+;					else
+;						{
+;						q->num = n;
+;						q->slots = NPCBS - 1;
+;						q->front = NULL;
+;						q->rear = NULL;
+;						}
+;				}
+;
+; Calling sequence:
+;			MOV	#Q,R0		; R0 = @ OF QUEUE HEADER
+;			MOV	#A,R1		; R1 = @ OF POOL AREA
+;			MOV	#N,R2		; R2 = # OF BUFFERS OR SLOTS
+;			MOV	#L,R3		; R3 = # OF BYTES PER BUFFER
+;			JSR	PC,FORMAT
+;
+; If R1 > 1 Format full queue header and queue space. R2 = # of buffers
+; If R1 = 1 Format empty queue header.                R2 = # of slots
+; If R1 = 0 Format counting semaphore.                R2 = Initial Value
+;
+;------------------------------------------------------------------------------
+;
+FORMAT:
+	MOV	R4,-(SP)			; SAVE WORK REGISTER
+	CMP	R1,#1				; DO WHAT?
+	BEQ	30$				; IF 1 THEN FORMAT EMPTY HEADER
+	BLO	40$				; IF 0 THEN FORMAT SEMAPHORE
+						; ELSE FORMAT FULL QUEUE HEADER
+;
+;	FORMAT FULL QUEUE HEADER
+;
+	MOV	R1,-(SP)
+	MOV	R2,-(SP)
+	CLR	Q.SLOTS(R0)			; EMPTY SLOTS := 0
+	MOV	R2,Q.NUM(R0)			; NUMBER OF ITEMS := -1 * R2
+	NEG	Q.NUM(R0)
+	MOV	R1,Q.FRONT(R0)			; FRONT LINK := @ OF FIRST ITEM
+	MOV	R1,R4				; CREATE NEW ITEM
+10$:
+	DEC	R2				; END OF POOL SPACE?
+	BLE	20$				; IF LE YEP
+	ADD	R3,R4
+	MOV	R4,@R1				; LINK TO PREVIOUS ITEM
+	MOV	R4,R1
+	BR	10$				; REPEAT
+20$:
+	CLR	@R1				; GROUND LAST BUFFER
+	MOV	R1,Q.REAR(R0)			; REAR LINK := @ OF LAST ITEM
+	MOV	(SP)+,R2
+	MOV	(SP)+,R1
+	BR	50$				; DONE
+;
+;	FORMAT EMPTY QUEUE HEADER
+;
+30$:
+	CLR	Q.NUM(R0)			; NUMBER OF ITEMS := 0
+	MOV	R2,Q.SLOTS(R0)			; NUMBER OF EMPTY SLOTS := R2
+	CLR	Q.FRONT(R0)			; FRONT LINK := GROUNDED
+	CLR	Q.REAR(R0)			; REAR LINK := GROUNDED
+	BR	50$				; DONE
+;
+;	FORMAT COUNTING SEMAPHORE
+;
+40$:
+	MOV	R2,Q.NUM(R0)			; VALUE OF SEMAPHORE := R2
+	MOV	#N.PCBS-1,Q.SLOTS(R0)		; NUM EMPTY SLOTS := CONSTANT
+	CLR	Q.FRONT(R0)			; FRONT LINK := GROUNDED
+	CLR	Q.REAR(R0)			; REAR LINE := GROUNDED
+						; DONE
+50$:
+	MOV	(SP)+,R4			; RESTORE WORK REGISTER
+	RTS	PC				; FINISHED
+	.SBTTL	PUT Subroutine
+;------------------------------------------------------------------------------
+;
+; PUT(Q,B) places linked data structure B at the end of queue header Q. Note
+;	that PUT is not a kernel service routine nor is it available to
+;	routines outside of the kernel. A PUT to a full queue header (Q.SLOTS
+;	is less than or equal to zero) is considered a fatal error which causes
+;	the kernel to halt.
+;
+;	PUT assumes the standard buffer structure: the first word of any
+;	data structure to be enqueued must be a link field.
+;
+; Algorithm:
+;
+;			VOID put(q,b)
+;			QUEUE *q;
+;			BUFFER *b;
+;				{
+;				if (q->slots > 0)
+;					{
+;					if (q->num >= 0)
+;						q->front = b;
+;					else
+;						*q->rear = b;
+;					q->rear = b;
+;					*b = NULL;
+;					q->slots--;
+;					q->num--;
+;					}
+;				else
+;					panic();
+;				}
+;
+; Calling sequence:
+;			MOV	#Q,R4		; R4 = @ OF QUEUE HEADER
+;			MOV	#B,R5		; R5 = @ OF BUFFER
+;			JSR	PC,PUT
+;
+;------------------------------------------------------------------------------
+;
+PUT:
+	TST	Q.SLOTS(R4)			; IF NOT FULL QUEUE THEN
+	BLE	30$
+	TST	Q.NUM(R4)
+	BLT	10$
+	MOV	R5,Q.FRONT(R4)			;   LINK ITEM INTO QUEUE
+	BR	20$
+10$:
+	MOV	R5,@Q.REAR(R4)
+20$:
+	MOV	R5,Q.REAR(R4)
+	CLR	@R5
+	DEC	Q.SLOTS(R4)
+	DEC	Q.NUM(R4)
+	RTS	PC
+30$:						; ELSE
+	HALT					;   FATAL ERROR
+	.SBTTL	GET Subroutine
+;------------------------------------------------------------------------------
+;
+; GET(Q,B) removes the linked data structure B from the front of queue header
+;	Q. Note that GET is not a kernel service routine nor is it available
+;	to routines outside of the kernel. A GET from an empty queue (Q.NUM is
+;	greater than or equal to zero) is considered a fatal error which causes
+;	the kernel to halt.
+;
+;	GET assumes the standard buffer structure: the first word of any
+;	data structure to be dequeued must be a link field.
+;
+; Algorithm:
+;
+;			BUFFER *get(q)
+;			QUEUE *q;
+;				{
+;				BUFFER *b;
+;				if (q->num < 0)
+;					{
+;					b = q->front;
+;					q->front = *b;
+;					q->slots++;
+;					q->num++;
+;					return(b);
+;					}
+;				else
+;					panic();
+;				}
+;
+; Calling sequence:
+;			MOV	#Q,R4		; R4 = @ OF QUEUE HEADER
+;			JSR	PC,GET		; R5 RETURNS @ OF BUFFER
+;
+;------------------------------------------------------------------------------
+;
+GET:
+	TST	Q.NUM(R4)			; IF NOT EMPTY QUEUE THEN
+	BGE	10$
+	MOV	Q.FRONT(R4),R5			;   UNLINK ITEM FROM QUEUE
+	MOV	@R5,Q.FRONT(R4)
+	INC	Q.SLOTS(R4)
+	INC	Q.NUM(R4)
+	RTS	PC
+10$:						; ELSE
+	HALT					;   FATAL ERROR
+	.SBTTL	Context Switch Routines
+	.SBTTL	PUSH Context into PCB
+;------------------------------------------------------------------------------
+;
+;
+;	C O N T E X T   S W I T C H   R O U T I N E S
+;
+;
+; PUSH saves the current process's context in its Process Control Block. The
+;	saved context consists of registers R1 through R6 (SP). R0, R7 (PC) and
+;	the PS are assumed to have already been saved.
+;
+; Calling sequence:
+;			JSR	R1,PUSH		; R5 RETURNS @ OF CP.PCB
+;
+;------------------------------------------------------------------------------
+;
+PUSH:
+	MOV	R2,-(SP)			; SAVE REGISTERS
+	MOV	R3,-(SP)
+	MOV	R4,-(SP)
+	MOV	R5,-(SP)
+	MOV	CP,R5				; GET PCB ADDRESS
+	MOV	SP,P.SP(R5)			; SAVE STACK POINTER
+	JMP	@R1
+;
+	.SBTTL	POP Context from PCB
+;------------------------------------------------------------------------------
+;
+; POP receives the address of a new CP.PCB in R5 and dispatches the
+;	associated process by restoring its context from its PCB. The
+;	restored context consists of R6 (SP) through R1. R0, R7 (PC) and
+;	the PS are assumed to be restored elsewhere. POP is the complement
+;	of PUSH.
+;
+;	WARNING! POP MUST IMMEDIATELY AND DIRECTLY PRECEDE EXIT.
+;
+; Calling sequence:
+;			BR	POP		; R5 must contain @ of CP.PCB
+;
+;------------------------------------------------------------------------------
+;
+POP:
+	MOV	R5,CP				; SET UP NEW CURRENT PROCESS
+	MOV	P.SP(R5),SP			; RESTORE STACK POINTER
+	MOV	(SP)+,R5			; RESTORE REGISTERS
+	MOV	(SP)+,R4
+	MOV	(SP)+,R3
+	MOV	(SP)+,R2
+	MOV	(SP)+,R1
+;
+	.SBTTL	EXIT Kernel
+;------------------------------------------------------------------------------
+;
+; EXIT is the exit point for all routines entered through the kernel service
+;	request handler. Note that EXIT may return to the original requesting
+;	process, or to a new current (formerly ready) process. EXIT restores
+;	R0, R7 (PC) and PS (the latter two through the RTI instruction). EXIT
+;	is the complement of KSRH.
+;
+;	WARNING! EXIT MUST IMMEDIATELY AND DIRECTLY FOLLOW POP.
+;
+; Calling sequence:
+;			BR	EXIT
+;
+;------------------------------------------------------------------------------
+;
+EXIT:
+	MOV	(SP)+,R0
+	RTI					; EXIT FROM SERVICE ROUTINE
+;
+;
+;
+	.SBTTL	Kernel Service Routines
+	.SBTTL	Short Wait
+;------------------------------------------------------------------------------
+;
+;
+;
+;	K E R N E L   S E R V I C E   R O U T I N E S
+;
+;
+;
+; SW performs a Short Wait or context switch: the Current Process is placed
+;	at the end of the READY queue and the first READY process becomes the
+;	Current Process. SW provides a mechanism for the Current Process to
+;	temporarily relinquish control of the CPU.
+;
+; Algorithm:
+;			ATOMIC VOID sw()
+;				{
+;				put(ready,push());
+;				pop(get(ready));
+;				}
+;
+; Calling sequence:
+;			SW
+;
+;------------------------------------------------------------------------------
+;
+$SW:
+	JSR	R1,PUSH				; SAVE CONTEXT IN PCB
+	MOV	#READY,R4			; ROTATE READY PROCESSES
+	JSR	PC,PUT			
+	JSR	PC,GET			
+	BR	POP				; START NEW PROCESS
+	.SBTTL	Passeren Semaphore
+;------------------------------------------------------------------------------
+;
+; P(S) is a Dijkstra's WAIT primitive on semaphore S.
+;
+; Algorithm:
+;			ATOMIC VOID p(s)
+;			SEMAPHORE *s;
+;				{
+;				if (s->num <= 0)
+;					{
+;					put(s,push());
+;					pop(get(ready));
+;					}
+;				else
+;					s->num--;
+;				}
+;
+; Calling sequence:
+;			MOV	#S,R4		; R4 = @ OF SEMAPHORE
+;			P
+;
+;------------------------------------------------------------------------------
+;
+$P:
+	TST	Q.NUM(R4)			; IF SEMAPHORE LOCKED THEN
+	BGT	10$
+	JSR	R1,PUSH				;   PUT PROCESS TO SLEEP
+	JSR	PC,PUT
+	MOV	#READY,R4			;   START NEXT READY PROCESS
+	JSR	PC,GET
+	BR	POP
+10$:						; ELSE
+	DEC	Q.NUM(R4)			;   REMOVE ONE UNIT OF RESOURCE
+	BR	EXIT
+	.SBTTL	Vrygeven Semaphore
+;------------------------------------------------------------------------------
+;
+; V(S) is Dijkstra's SIGNAL primitive on semaphore S.
+;
+; Algorithm:
+;			ATOMIC VOID v(s)
+;			SEMAPHORE *s;
+;				{
+;				if (s->num < 0)
+;					put(ready,get(s));
+;				else
+;					s->num-++;
+;				}
+;
+; Calling sequence:
+;			MOV	#S,R4		; R4 = @ OF SEMAPHORE
+;			V
+;
+;------------------------------------------------------------------------------
+;
+$V:
+	TST	Q.NUM(R4)			; IF PROCESS WAITING THEN
+	BGE	10$
+	MOV	R5,-(SP)
+	JSR	PC,GET				;   WAKE UP SLEEPING PROCESS
+	MOV	R4,-(SP)
+	MOV	#READY,R4
+	JSR	PC,PUT
+	MOV	(SP)+,R4
+	MOV	(SP)+,R5
+	BR	EXIT
+10$:						; ELSE
+	INC	Q.NUM(R4)			;   RELEASE ONE UNIT OF RESOURCE
+	BVC	EXIT
+	HALT					; FATAL IF NEGATIVE NOW 
+
+	.SBTTL	SEND Message
+;------------------------------------------------------------------------------
+;
+; SEND(MB,B) performs an asynchronous send of message buffer B to mailbox MB. ; ; Algorithm:
+;			ATOMIC VOID send(mb,b)
+;			MAILBOX *mb;
+;			BUFFER *b;
+;				{
+;				put(mb->queue,b);
+;				v(mb->semaphore);
+;				}
+;
+; Calling sequence:
+;			MOV	#MB,R4		; R4 = @ OF MAILBOX
+;			MOV	#B,R5		; R5 = @ OF MESSAGE
+;			SEND
+;
+;------------------------------------------------------------------------------
+;
+$SEND:
+	JSR	PC,PUT				; PUT MESSAGE IN QUEUE
+	ADD	#Q.SEMAPHORE,R4
+	V					; WAKE UP SLEEPING PROCESS
+	SUB	#Q.SEMAPHORE,R4
+	BR	EXIT
+;
+;
+;
+	.SBTTL	RECeiVe Message
+;------------------------------------------------------------------------------
+;
+; RECV(MB,B) performs an asynchronous receive of message buffer B from
+;	mailbox MB.
+;
+; Algorithm:
+;			ATOMIC QUEUE *recv(mb)
+;			MAILBOX *mb;
+;				{
+;				p(mb->semaphore);
+;				return(get(mb->queue));
+;				}
+;
+; Calling sequence:
+;			MOV	#MB,R4		; R4 = @ OF MAILBOX
+;			RECV			; R5 RETURNS @ OF MESSAGE
+;
+;------------------------------------------------------------------------------
+;
+$RECV:
+	ADD	#Q.SEMAPHORE,R4
+	P					; SLEEP UNTIL MESSAGE IN QUEUE
+	SUB	#Q.SEMAPHORE,R4
+	JSR	PC,GET				; GET MESSAGE FROM QUEUE
+	BR	EXIT
+	.SBTTL	CReate Process
+;------------------------------------------------------------------------------
+;
+; CRP(E,L,P) creates a process with entry point E running at CPU priority
+;	L using Process Control Block P. The PCB is allocated from the kernel's
+;	pool of free PCBs. If a PCB is unavailable, the requesting process is
+;	put to sleep. The new process is NOT automatically started.
+;
+; Algorithm:
+;			ATOMIC PCB *crp(e,l)
+;			PROCESS (*e)();
+;			int l;
+;				{
+;				PCB *p;
+;				LONG *sp;
+;				p = recv(pcbs);
+;				p->next = NULL;
+;				p->ps = l;
+;				p->pc = e;
+;				sp = &p.stack;
+;				*(--sp) = p->ps;
+;				*(--sp) = p->pc;
+;				*(--sp) = p;
+;				*(--sp) = 0;
+;				*(--sp) = 0;
+;				*(--sp) = 0;
+;				*(--sp) = 0;
+;				*(--sp) = 0;
+;				p->sp = sp;
+;				return(p);
+;				}
+;
+; Calling sequence:
+;			MOV	#E,R4		; R4 = @ OF PROCESS ENTRY POINT
+;			MOV	#L,R5		; R5 = # OF PRIORITY
+;			CRP			; R5 RETURNS @ OF PCB
+;
+;------------------------------------------------------------------------------
+;
+$CRP:
+	MOV	R4,-(SP)			; SAVE ENTRY POINT
+	MOV	R5,-(SP)			; SAVE PRIORITY
+	MOV	#PCBS,R4			; GET A FREE PCB
+	RECV
+	CLR	P.NEXT(R5)			; GROUND LINK
+	MOV	(SP)+,P.PS(R5)			; RESTORE PRIORITY
+	MOV	@SP,P.PC(R5)			; COPY ENTRY POINT
+	MOV	R5,R4				; CALCULATE @ OF BASE OF STACK
+	ADD	#P.STACK,R4
+	MOV	P.PS(R5),-(R4)			; PUSH INITIAL PS
+	MOV	P.PC(R5),-(R4)			; PUSH INITIAL PC
+	MOV	R5,-(R4)			; PUSH INITIAL R0 = @ OF PCB
+	CLR	-(R4)				; PUSH INITIAL R1 = 0
+	CLR	-(R4)				; PUSH INITIAL R2 = 0
+	CLR	-(R4)				; PUSH INITIAL R3 = 0
+	CLR	-(R4)				; PUSH INITIAL R4 = 0
+	CLR	-(R4)				; PUSH INITIAL R5 = 0
+	MOV	R4,P.SP(R5)			; ESTABLISH INITIAL SP
+	MOV	(SP)+,R4			; RESTORE ENTRY POINT
+	BR	EXIT
+	.SBTTL	STart Process
+;------------------------------------------------------------------------------
+;
+; STP(P) starts the process represented by the Process Control Block P by
+;	placing the PCB in the READY queue.
+;
+; Algorithm:
+;
+;			ATOMIC VOID stp(p)
+;			PCB *p;
+;				{
+;				put(ready,p);
+;				}
+;
+; Calling sequence:
+;			MOV	#P,R5		; R5 = @ OF PCB
+;			STP
+;
+;------------------------------------------------------------------------------
+;
+$STP:
+	MOV	R4,-(SP)
+	MOV	#READY,R4			; PUT PCB ON READY QUEUE
+	JSR	PC,PUT
+	MOV	(SP)+,R4
+	BR	EXIT
+;
+;
+	.SBTTL	End Of Process
+;------------------------------------------------------------------------------
+;
+; EOP destroys the Current Process by removing its Process Control Block from
+;	the system and returning it to the free PCB queue. The Current Process
+;	effectively self destructs.
+;
+; Algorithm:
+;
+;			ATOMIC VOID eop()
+;				{
+;				send(pcbs,cp);
+;				pop(get(ready));
+;				}
+;
+; Calling sequence:
+;			EOP
+;
+;------------------------------------------------------------------------------
+;
+$EOP:
+	MOV	#PCBS,R4			; PUT PCB ON FREE PCB QUEUE
+	MOV	CP,R5
+	SEND
+	MOV	#READY,R4			; START NEXT READY PROCESS
+	JSR	PC,GET
+	BR	POP
+
+	.SBTTL	End
+;------------------------------------------------------------------------------
+;	E N D   O F   K E R N E L
+;------------------------------------------------------------------------------
+;
+	.END	KERNEL
