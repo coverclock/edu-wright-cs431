@@ -37,3 +37,59 @@ or indeed anyone else.
 The algorithms presented in pseudo-C code should be considered guidelines
 or aids to assist in understanding the corresponding assembler code. In
 most cases, the analogy is only approximate.
+
+# Update (from correspondance dated 2019-03-17)
+
+My co-author, colleague, old friend David Hemmendinger made the following
+remarks.
+
+> When I asked Dayton Clark about his role, he wrote:
+> 
+> *I certainly am among those who loved CS 431.  I still think of it
+> fondly.  I taught the course once, I believe, in '78 or '79.  But to
+> the best of my memory I did not rewrite the Kernel.  That was a time
+> when I was not afraid to any code I came across, but I don't recollect
+> doing so with this code.  The only version I remember is Joe's version
+> and I do not know where any copies are.
+> 
+> John's and your version looks beautiful and I'm glad to see that
+> someone has archived it.*
+> 
+> On your remark that adding even a single instruction could disrupt
+> the handling of data from high-speed devices:  This is actually due
+> to a design flaw.  Running a null process when nothing else is ready,
+> and having it do steady context switches, meant that the system was
+> uninterruptible nearly all the time, allowing interrupts only at the
+> end of its spin loop.  Wirth's Modula-2 provided primitives with which
+> one could write similar kernels, and its way of handling an empty
+> queue of ready processes was to provide a "listen" function that
+> was a tight loop, resetting priority to 0 and setting it back to
+> uninterruptible.  It thereby allowed interrupts while the kernel was
+> waiting for a process to become ready.
+> 
+> I realized this when I was using Modula-2 in the mid-1980s.  Having a
+> null process may have made it easier for students to understand who was
+> minding the store, albeit less efficient.  I also found it interesting
+> that all three of the M-2 compilers that I used, which implemented
+> similar kernels, had errors in their implementations, perhaps because
+> compiler writers weren't familiar with concurrency.
+
+This result in David and I discussing other implementations for the
+null process that I had used in other projects like board support
+packages and microcontroller task loops, in which I used a
+processor-specific machine instruction to wait in an interruptable
+state until an interrupt occured. I couldn't remember if the PDP-11
+had such an instruction. David almost immediately replied.
+
+> I just checked -- it did.  Even simpler than clearing and setting
+> priority bits.  The largest 11s also had a set-priority-level
+> instruction.
+>
+> The place to use it would be in the kernel routine that gets the next
+> process to run:
+>
+    Next:   while empty(readyQ) do
+                  wait
+          cp := get(readyQ)
+
+David, I miss you. It is always a pleasure working with you.
