@@ -74,7 +74,7 @@ remarks.
 > similar kernels, had errors in their implementations, perhaps because
 > compiler writers weren't familiar with concurrency.
 
-This resulted in David and I discussing other implementations for the
+This resulted in David and me discussing other implementations for the
 null process that I had used in other projects like board support
 packages and microcontroller task loops, in which I used a
 processor-specific machine instruction to wait in an interruptable
