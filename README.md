@@ -38,7 +38,7 @@ The algorithms presented in pseudo-C code should be considered guidelines
 or aids to assist in understanding the corresponding assembler code. In
 most cases, the analogy is only approximate.
 
-# Update (from correspondance dated 2019-03-17)
+# Update (from electronic correspondence dated 2019-03-17)
 
 My co-author, colleague, old friend David Hemmendinger made the following
 remarks.
