@@ -45,7 +45,7 @@ remarks.
 
 > When I asked Dayton Clark about his role, he wrote:
 > 
-> *I certainly am among those who loved CS 431.  I still think of it
+> _I certainly am among those who loved CS 431.  I still think of it
 > fondly.  I taught the course once, I believe, in '78 or '79.  But to
 > the best of my memory I did not rewrite the Kernel.  That was a time
 > when I was not afraid to any code I came across, but I don't recollect
@@ -53,7 +53,7 @@ remarks.
 > and I do not know where any copies are.
 > 
 > John's and your version looks beautiful and I'm glad to see that
-> someone has archived it.*
+> someone has archived it._
 > 
 > On your remark that adding even a single instruction could disrupt
 > the handling of data from high-speed devices:  This is actually due
@@ -74,7 +74,7 @@ remarks.
 > similar kernels, had errors in their implementations, perhaps because
 > compiler writers weren't familiar with concurrency.
 
-This result in David and I discussing other implementations for the
+This resulted in David and I discussing other implementations for the
 null process that I had used in other projects like board support
 packages and microcontroller task loops, in which I used a
 processor-specific machine instruction to wait in an interruptable
